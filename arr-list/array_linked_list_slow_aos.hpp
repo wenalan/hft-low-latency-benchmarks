@@ -6,6 +6,8 @@
 #include <utility>
 #include <vector>
 
+namespace arrlist_slow {
+
 // Array-backed doubly linked list using indices instead of pointers.
 // Supports O(1) push/pop front/back, insert after, and erase by node handle.
 // Uses a generation counter to detect stale handles.
@@ -228,3 +230,5 @@ private:
     int tail_ = kNull;
     std::size_t size_ = 0;
 };
+
+} // namespace arrlist_slow

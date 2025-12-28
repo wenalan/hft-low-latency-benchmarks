@@ -6,6 +6,8 @@
 #include <utility>
 #include <vector>
 
+namespace arrlist_fast {
+
 // Array-backed doubly linked list using indices instead of pointers.
 // Storage uses structure-of-arrays (SoA) for better cache behavior when only
 // some fields are touched during traversal. Operations use stable handles
@@ -228,3 +230,5 @@ private:
     int tail_ = kNull;
     std::size_t size_ = 0;
 };
+
+} // namespace arrlist_fast

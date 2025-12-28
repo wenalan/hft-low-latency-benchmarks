@@ -1,13 +1,20 @@
 #include <algorithm>
 #include <chrono>
 #include <iostream>
+#include <limits>
 #include <list>
 #include <random>
 #include <string>
 #include <vector>
 
 #include "array_linked_list_slow_aos.hpp"
-//#include "array_linked_list_fast_soa.hpp"
+#include "array_linked_list_fast_soa.hpp"
+
+template <typename T>
+using SlowArrayLinkedList = arrlist_slow::ArrayLinkedList<T>;
+
+template <typename T>
+using FastArrayLinkedList = arrlist_fast::ArrayLinkedList<T>;
 
 struct Order {
     std::uint64_t id;
@@ -20,7 +27,7 @@ struct BenchmarkResult {
     std::size_t final_depth = 0;
     double ms = 0.0;
     double ns_per_op = 0.0;
-std::uint64_t checksum = 0;
+    std::uint64_t checksum = 0;
 };
 
 // To keep the compiler from optimizing away iteration work.
@@ -34,6 +41,7 @@ struct ChurnStep {
     Order order;            // valid when op == Add
 };
 
+template <typename List>
 class ArrayListBook {
 public:
     explicit ArrayListBook(std::size_t capacity) : list_(capacity) { handles_.reserve(capacity); }
@@ -83,8 +91,8 @@ public:
     }
 
 private:
-    ArrayLinkedList<Order> list_;
-    std::vector<ArrayLinkedList<Order>::NodeHandle> handles_;
+    List list_;
+    std::vector<typename List::NodeHandle> handles_;
 };
 
 class StdListBook {
@@ -206,6 +214,9 @@ BenchmarkResult bench_iterate(const std::string& name,
                               std::size_t iterations) {
     preload(book, preload_orders);
 
+    // Warm cache with one full pass before timing steady-state iterations.
+    g_sink = book.iterate_sum();
+
     std::uint64_t checksum = 0;
     const auto start = std::chrono::steady_clock::now();
     for (std::size_t i = 0; i < iterations; ++i) {
@@ -219,11 +230,34 @@ BenchmarkResult bench_iterate(const std::string& name,
     return BenchmarkResult{name, iterations, book.size(), ms, ns_per_op, checksum};
 }
 
+struct RunSummary {
+    BenchmarkResult best;
+    BenchmarkResult worst;
+};
+
+template <typename Fn>
+RunSummary run_best_and_worst(std::size_t runs, Fn&& fn) {
+    RunSummary summary;
+    summary.best.ms = std::numeric_limits<double>::max();
+    summary.worst.ms = 0.0;
+    for (std::size_t i = 0; i < runs; ++i) {
+        auto r = fn();
+        if (r.ms < summary.best.ms) {
+            summary.best = r;
+        }
+        if (r.ms > summary.worst.ms) {
+            summary.worst = r;
+        }
+    }
+    return summary;
+}
+
 int main() {
     const std::size_t capacity = 32 * 1024;
     const std::size_t erase_ops = capacity;
     const std::size_t churn_ops = 200'000;
     const std::size_t iterate_loops = 2'000;
+    const std::size_t runs_per_case = 5;
 
     std::mt19937_64 rng_orders(42);
     std::uniform_int_distribution<int> qty_dist(1, 10);
@@ -279,8 +313,8 @@ int main() {
         }
     }
 
-    auto print = [](const BenchmarkResult& r) {
-        std::cout << "  " << r.name << "\n"
+    auto print = [](const BenchmarkResult& r, const std::string& tag) {
+        std::cout << "  " << r.name << " [" << tag << "]\n"
                   << "    final depth: " << r.final_depth << "\n"
                   << "    time:        " << r.ms << " ms\n"
                   << "    ns/op:       " << r.ns_per_op << "\n";
@@ -288,53 +322,101 @@ int main() {
 
     // Scenario 1: fill to capacity.
     {
-        ArrayListBook array_book(capacity);
-        StdListBook list_book(capacity);
-        auto array_result = bench_fill("ArrayLinkedList fill", array_book, fill_orders);
-        auto list_result = bench_fill("std::list fill", list_book, fill_orders);
+        auto slow_result = run_best_and_worst(runs_per_case, [&] {
+            ArrayListBook<SlowArrayLinkedList<Order>> slow_book(capacity);
+            return bench_fill("slow aos fill", slow_book, fill_orders);
+        });
+        auto fast_result = run_best_and_worst(runs_per_case, [&] {
+            ArrayListBook<FastArrayLinkedList<Order>> fast_book(capacity);
+            return bench_fill("fast soa fill", fast_book, fill_orders);
+        });
+        auto list_result = run_best_and_worst(runs_per_case, [&] {
+            StdListBook list_book(capacity);
+            return bench_fill("std::list fill", list_book, fill_orders);
+        });
 
-        std::cout << "Fill to capacity (" << capacity << " orders)\n";
-        print(array_result);
-        print(list_result);
+        std::cout << "Fill to capacity (" << capacity << " orders, best/worst of " << runs_per_case << ")\n";
+        print(slow_result.best, "best");
+        print(slow_result.worst, "worst");
+        print(fast_result.best, "best");
+        print(fast_result.worst, "worst");
+        print(list_result.best, "best");
+        print(list_result.worst, "worst");
         std::cout << "\n";
     }
 
     // Scenario 2: random erase from full depth.
     {
-        ArrayListBook array_book(capacity);
-        StdListBook list_book(capacity);
-        auto array_result = bench_erase("ArrayLinkedList erase", array_book, fill_orders, erase_positions);
-        auto list_result = bench_erase("std::list erase", list_book, fill_orders, erase_positions);
+        auto slow_result = run_best_and_worst(runs_per_case, [&] {
+            ArrayListBook<SlowArrayLinkedList<Order>> slow_book(capacity);
+            return bench_erase("slow aos erase", slow_book, fill_orders, erase_positions);
+        });
+        auto fast_result = run_best_and_worst(runs_per_case, [&] {
+            ArrayListBook<FastArrayLinkedList<Order>> fast_book(capacity);
+            return bench_erase("fast soa erase", fast_book, fill_orders, erase_positions);
+        });
+        auto list_result = run_best_and_worst(runs_per_case, [&] {
+            StdListBook list_book(capacity);
+            return bench_erase("std::list erase", list_book, fill_orders, erase_positions);
+        });
 
-        std::cout << "Random erase from full depth (" << erase_ops << " cancels)\n";
-        print(array_result);
-        print(list_result);
+        std::cout << "Random erase from full depth (" << erase_ops << " cancels, best/worst of " << runs_per_case << ")\n";
+        print(slow_result.best, "best");
+        print(slow_result.worst, "worst");
+        print(fast_result.best, "best");
+        print(fast_result.worst, "worst");
+        print(list_result.best, "best");
+        print(list_result.worst, "worst");
         std::cout << "\n";
     }
 
     // Scenario 3: churn (random erase + insert) starting from full depth.
     {
-        ArrayListBook array_book(capacity);
-        StdListBook list_book(capacity);
-        auto array_result = bench_churn("ArrayLinkedList churn", array_book, fill_orders, churn_steps);
-        auto list_result = bench_churn("std::list churn", list_book, fill_orders, churn_steps);
+        auto slow_result = run_best_and_worst(runs_per_case, [&] {
+            ArrayListBook<SlowArrayLinkedList<Order>> slow_book(capacity);
+            return bench_churn("slow aos churn", slow_book, fill_orders, churn_steps);
+        });
+        auto fast_result = run_best_and_worst(runs_per_case, [&] {
+            ArrayListBook<FastArrayLinkedList<Order>> fast_book(capacity);
+            return bench_churn("fast soa churn", fast_book, fill_orders, churn_steps);
+        });
+        auto list_result = run_best_and_worst(runs_per_case, [&] {
+            StdListBook list_book(capacity);
+            return bench_churn("std::list churn", list_book, fill_orders, churn_steps);
+        });
 
-        std::cout << "Random erase/insert churn (" << churn_ops << " ops)\n";
-        print(array_result);
-        print(list_result);
+        std::cout << "Random erase/insert churn (" << churn_ops << " ops, best/worst of " << runs_per_case << ")\n";
+        print(slow_result.best, "best");
+        print(slow_result.worst, "worst");
+        print(fast_result.best, "best");
+        print(fast_result.worst, "worst");
+        print(list_result.best, "best");
+        print(list_result.worst, "worst");
         std::cout << "\n";
     }
 
     // Scenario 4: pure iteration over a full bucket.
     {
-        ArrayListBook array_book(capacity);
-        StdListBook list_book(capacity);
-        auto array_result = bench_iterate("ArrayLinkedList iterate", array_book, fill_orders, iterate_loops);
-        auto list_result = bench_iterate("std::list iterate", list_book, fill_orders, iterate_loops);
+        auto slow_result = run_best_and_worst(runs_per_case, [&] {
+            ArrayListBook<SlowArrayLinkedList<Order>> slow_book(capacity);
+            return bench_iterate("slow aos iterate", slow_book, fill_orders, iterate_loops);
+        });
+        auto fast_result = run_best_and_worst(runs_per_case, [&] {
+            ArrayListBook<FastArrayLinkedList<Order>> fast_book(capacity);
+            return bench_iterate("fast soa iterate", fast_book, fill_orders, iterate_loops);
+        });
+        auto list_result = run_best_and_worst(runs_per_case, [&] {
+            StdListBook list_book(capacity);
+            return bench_iterate("std::list iterate", list_book, fill_orders, iterate_loops);
+        });
 
-        std::cout << "Pure iteration over full depth (" << iterate_loops << " traversals)\n";
-        print(array_result);
-        print(list_result);
+        std::cout << "Pure iteration over full depth (" << iterate_loops << " traversals, best/worst of " << runs_per_case << ")\n";
+        print(slow_result.best, "best");
+        print(slow_result.worst, "worst");
+        print(fast_result.best, "best");
+        print(fast_result.worst, "worst");
+        print(list_result.best, "best");
+        print(list_result.worst, "worst");
         std::cout << "\n";
     }
 
